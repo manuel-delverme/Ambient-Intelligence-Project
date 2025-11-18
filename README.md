@@ -1,1 +1,28 @@
 # Ambient-Intelligence-Project
+
+This repository now contains a reusable HVAC sizing helper (`hvac_core.py`)
+that mirrors the Grasshopper components discussed in the prompt.  The module
+exposes:
+
+* `distribute_it_load` – sits between the IT and CRAH stages.  It takes the
+  total IT thermal load, the number of white spaces, and an IT row redundancy
+  string (e.g. `"6+2"`).  The function returns the white-space descriptions plus
+  per-row `PowerConsumer` objects so you can connect them to downstream
+  components or the global power-string aggregator.
+* `size_crah`, `size_pumps`, `size_chillers` – identical to the original logic
+  but CRAH sizing can now accept the whitespace output so that the CRAH units
+  are multiplied by the number of white spaces.  Pump sizing gracefully allows
+  the pressure drop / head to be driven to zero which in turn zeroes out the
+  hydraulic and electrical power.
+* `aggregate_power_strings` – merges the IT rows, CRAHs, pumps, and chillers
+  (after running `assign_dual_feeds`).  The aggregator now balances every unit
+  across the required number of strings so that the live strings share the load
+  evenly while any extra strings remain on standby for redundancy.  It returns a
+  `PowerStringAggregate` dataclass with the full per-string breakdown.
+* `build_power_string_report` – consumes the aggregate output and produces a
+  table per string listing each connected unit with its load/capacity.  Provide a
+  `failed_string` index to see how the load would be redistributed when that
+  string drops offline (the helper uses the secondary feeds when available and
+  otherwise shifts units to the least-loaded surviving string).
+
+The legacy exercises (`Lab_2.py`, `first_exercise.py`) are left untouched.
