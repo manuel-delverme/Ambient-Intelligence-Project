@@ -17,8 +17,9 @@ Visit `http://localhost:5000` and you will see cards that let you:
    mechanical parameters.
 2. Inspect how the load is divided across white spaces / rows plus the thermal
    cascade from CRAH ➜ pumps ➜ chillers.
-3. Review the automatic power-string balancing table and optionally simulate a
-   failed string to observe the redistributed load and any units that were lost.
+3. Review the automatic power-string balancing table plus per-string failure
+   summaries that highlight how the load is redistributed and which units were
+   lost.
 
 The lightweight HTTP server uses only the Python standard library and calls
 into `hvac_core`, so CLI scripts and the UI always stay in sync.
@@ -38,14 +39,14 @@ The module exposes:
   the pressure drop / head to be driven to zero which in turn zeroes out the
   hydraulic and electrical power.
 * `aggregate_power_strings` – merges the IT rows, CRAHs, pumps, and chillers
-  (after running `assign_dual_feeds`).  The aggregator now balances every unit
-  across the required number of strings so that the live strings share the load
-  evenly while any extra strings remain on standby for redundancy.  It returns a
+  while automatically balancing and dual-feeding the units across the required
+  number of strings so that the live strings share the load evenly while any
+  extra strings remain on standby for redundancy.  It returns a
   `PowerStringAggregate` dataclass with the full per-string breakdown.
 * `build_power_string_report` – consumes the aggregate output and produces a
-  table per string listing each connected unit with its load/capacity.  Provide a
-  `failed_string` index to see how the load would be redistributed when that
-  string drops offline (the helper uses the secondary feeds when available and
-  otherwise shifts units to the least-loaded surviving string).
+  table per string listing each connected unit with its load/capacity.  The
+  helper now enumerates the failure impact for every string automatically by
+  routing units to their secondary feeds (or the least-loaded survivor when no
+  secondary is defined).
 
 The legacy exercises (`Lab_2.py`, `first_exercise.py`) are left untouched.
