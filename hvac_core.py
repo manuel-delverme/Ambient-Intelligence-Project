@@ -112,6 +112,9 @@ class UnitSummary:
     peak_kW: float
     capacity_kW: float | None
     whitespace_id: int | None
+    primary_string: int | None
+    secondary_string: int | None
+    dual_fed: bool
 
 
 @dataclass
@@ -139,7 +142,7 @@ class PowerStringAggregate:
 @dataclass
 class PowerStringReport:
     table: List[StringReportRow]
-    failure_case: Dict[str, object] | None
+    failure_cases: List[Dict[str, object]]
 
 
 # ---------------------------------------------------------------------------
@@ -147,28 +150,45 @@ class PowerStringReport:
 # ---------------------------------------------------------------------------
 
 
+def _assign_secondary_feeds(
+    units: Sequence[PowerConsumer], total_strings: int, required_strings: int
+) -> None:
+    total_strings = max(1, int(total_strings))
+    required_strings = max(1, min(total_strings, int(required_strings)))
+
+    if total_strings <= 1:
+        for unit in units:
+            unit.secondary_string = None
+        return
+
+    standby_strings = [sid for sid in range(1, total_strings + 1) if sid > required_strings]
+    if not standby_strings:
+        standby_strings = list(range(1, total_strings + 1))
+
+    sorted_units = sorted(units, key=lambda u: u.normal_kW, reverse=True)
+    for idx, unit in enumerate(sorted_units):
+        candidate = standby_strings[idx % len(standby_strings)]
+        if candidate == unit.primary_string:
+            candidate = (unit.primary_string % total_strings) + 1
+            if candidate == unit.primary_string:
+                candidate = None
+        unit.secondary_string = candidate if candidate != unit.primary_string else None
+
+
 def assign_dual_feeds(units: Sequence[PowerConsumer], N_strings: int, N_req: int):
     N_tot = len(units)
     if N_tot == 0 or N_strings == 0:
         return [False] * N_tot
 
+    N_strings = max(1, int(N_strings))
+    N_req = max(1, int(N_req))
+
     for i, unit in enumerate(units):
-        unit.primary_string = (i % N_strings) + 1
+        if getattr(unit, "primary_string", None) is None:
+            unit.primary_string = (i % N_strings) + 1
         unit.secondary_string = None
 
-    L_max = max(0, N_tot - N_req)
-    buckets = [[] for _ in range(N_strings)]
-    for unit in units:
-        buckets[unit.primary_string - 1].append(unit)
-
-    for s in range(N_strings):
-        singles = [u for u in buckets[s] if u.secondary_string is None]
-        excess = len(singles) - L_max
-        if excess > 0:
-            for i in range(excess):
-                u = singles[i]
-                sec = (s + 1) % N_strings
-                u.secondary_string = sec + 1
+    _assign_secondary_feeds(units, N_strings, N_req)
 
     return [u.secondary_string is not None for u in units]
 
@@ -473,6 +493,8 @@ def aggregate_power_strings(
     else:
         _clamp_primary_strings(all_units, N_tot)
 
+    assign_dual_feeds(all_units, N_tot, N_req)
+
     total_peak_kW = sum(u.peak_kW for u in all_units)
     total_normal_kW = sum(u.normal_kW for u in all_units)
     cap_per = total_peak_kW / float(N_req) if N_req > 0 else 0.0
@@ -564,6 +586,9 @@ def build_power_string_report(
                     peak_kW=unit.peak_kW,
                     capacity_kW=_component_capacity(unit),
                     whitespace_id=getattr(unit, "whitespace_id", None),
+                    primary_string=getattr(unit, "primary_string", None),
+                    secondary_string=getattr(unit, "secondary_string", None),
+                    dual_fed=getattr(unit, "secondary_string", None) is not None,
                 )
             )
 
@@ -583,13 +608,12 @@ def build_power_string_report(
             )
         )
 
-    failure_case = (
-        _simulate_string_failure(aggregate, failed_string)
-        if failed_string is not None
-        else None
-    )
+    failure_cases: List[Dict[str, object]] = []
+    if aggregate.total_strings > 0:
+        for string_id in range(1, aggregate.total_strings + 1):
+            failure_cases.append(_simulate_string_failure(aggregate, string_id))
 
-    return PowerStringReport(table=rows, failure_case=failure_case)
+    return PowerStringReport(table=rows, failure_cases=failure_cases)
 
 
 __all__ = [

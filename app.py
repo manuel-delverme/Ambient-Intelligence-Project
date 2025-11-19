@@ -48,7 +48,6 @@ def default_inputs() -> Dict[str, Any]:
         "eta_pump": 0.75,
         "eta_pump_motor": 0.95,
         "cop_chiller": 5.0,
-        "failed_string": "",
     }
 
 
@@ -90,6 +89,9 @@ def _format_report(report: hvac.PowerStringReport):
                         "normal_kW": comp.normal_kW,
                         "capacity_kW": comp.capacity_kW,
                         "whitespace_id": comp.whitespace_id,
+                        "primary_string": comp.primary_string,
+                        "secondary_string": comp.secondary_string,
+                        "dual_fed": comp.dual_fed,
                     }
                     for comp in row.components
                 ],
@@ -97,7 +99,7 @@ def _format_report(report: hvac.PowerStringReport):
         )
     return {
         "table": table,
-        "failure_case": report.failure_case,
+        "failure_cases": report.failure_cases,
     }
 
 
@@ -117,10 +119,6 @@ def run_simulation(form_data: Dict[str, Any]):
     inputs["eta_pump"] = _float(inputs["eta_pump"], 0.75)
     inputs["eta_pump_motor"] = _float(inputs["eta_pump_motor"], 0.95)
     inputs["cop_chiller"] = _float(inputs["cop_chiller"], 5.0)
-
-    failed_string_value = form_data.get("failed_string", [""])
-    failed_string_raw = failed_string_value[0] if isinstance(failed_string_value, list) else failed_string_value
-    failed_string_idx = _int(failed_string_raw, 0) if failed_string_raw else None
 
     row_cfg = hvac.parse_redundancy(inputs["row_redundancy"])
     crah_cfg = hvac.parse_redundancy(inputs["crah_redundancy"])
@@ -165,7 +163,7 @@ def run_simulation(form_data: Dict[str, Any]):
         redundancy_strings=string_cfg,
     )
 
-    report = hvac.build_power_string_report(aggregate, failed_string_idx)
+    report = hvac.build_power_string_report(aggregate)
 
     return {
         "inputs": inputs,
@@ -216,51 +214,94 @@ def build_page(data):
     )
 
     string_rows = []
+    dual_feed_rows = []
     for row in data["report"]["table"]:
-        comps = "".join(
-            f"<li><strong>{html.escape(comp['label'])}</strong> ({comp['kind']}) – {comp['normal_kW']:.1f} kW"
-            + (f" · cap {comp['capacity_kW']:.1f} kW" if comp["capacity_kW"] else "")
-            + (f" · WS {comp['whitespace_id']}" if comp["whitespace_id"] else "")
-            + "</li>"
-            for comp in row["components"]
-        )
+        comps = []
+        for comp in row["components"]:
+            feed_bits = []
+            if comp["primary_string"]:
+                feed_bits.append(f"Primary S{comp['primary_string']}")
+            if comp["secondary_string"]:
+                feed_bits.append(f"Secondary S{comp['secondary_string']}")
+            else:
+                feed_bits.append("Single feed")
+            comps.append(
+                "<li>"
+                + f"<strong>{html.escape(comp['label'])}</strong> ({comp['kind']}) – {comp['normal_kW']:.1f} kW"
+                + (f" · cap {comp['capacity_kW']:.1f} kW" if comp["capacity_kW"] else "")
+                + (f" · WS {comp['whitespace_id']}" if comp["whitespace_id"] else "")
+                + (" · " + " / ".join(feed_bits) if feed_bits else "")
+                + "</li>"
+            )
+            dual_feed_rows.append(
+                {
+                    "label": comp["label"],
+                    "kind": comp["kind"],
+                    "primary": comp["primary_string"],
+                    "secondary": comp["secondary_string"],
+                    "dual": comp["dual_fed"],
+                }
+            )
+        comps_html = "".join(comps)
         string_rows.append(
             "<tr>"
             f"<td>{row['string_id']}</td>"
             f"<td>{row['normal_load_kW']:.1f}</td>"
             f"<td>{row['design_capacity_kW']:.1f}</td>"
             f"<td>{row['utilization'] * 100:.1f}%</td>"
-            f"<td><ul>{comps}</ul></td>"
+            f"<td><ul>{comps_html}</ul></td>"
             "</tr>"
         )
 
+    dual_section = ""
+    if dual_feed_rows:
+        dual_section = (
+            "<section class='card'>"
+            "<h2>Feed assignments</h2>"
+            "<table><thead><tr><th>Component</th><th>Type</th><th>Primary string</th><th>Secondary string</th><th>Dual fed?</th></tr></thead>"
+            "<tbody>"
+            + "".join(
+                "<tr>"
+                f"<td>{html.escape(row['label'])}</td>"
+                f"<td>{row['kind']}</td>"
+                f"<td>{row['primary'] if row['primary'] else '–'}</td>"
+                f"<td>{row['secondary'] if row['secondary'] else '–'}</td>"
+                f"<td>{'Yes' if row['dual'] else 'No'}</td>"
+                "</tr>"
+                for row in dual_feed_rows
+            )
+            + "</tbody></table></section>"
+        )
+
     failure_section = ""
-    failure_case = data["report"].get("failure_case")
-    if failure_case:
-        if failure_case.get("message"):
-            failure_section = (
-                "<section class='card failure'><h2>Failure scenario</h2>"
-                f"<p>{html.escape(failure_case['message'])}</p></section>"
+    failure_cases = data["report"].get("failure_cases") or []
+    if failure_cases:
+        failure_rows = []
+        for case in failure_cases:
+            loads = "".join(
+                f"<li>String {sid}: {load:.1f} kW</li>"
+                for sid, load in sorted(case.get("redistributed_normal_kW", {}).items())
             )
-        else:
-            rows = "".join(
-                f"<tr><td>{sid}</td><td>{load:.1f}</td></tr>"
-                for sid, load in failure_case["redistributed_normal_kW"].items()
+            lost = case.get("lost_units") or []
+            lost_text = ", ".join(map(html.escape, lost)) if lost else "None"
+            failure_rows.append(
+                "<tr>"
+                f"<td>{case.get('failed_string')}</td>"
+                f"<td>{case.get('design_capacity_per_string_kW', 0.0):.1f}</td>"
+                f"<td><ul>{loads}</ul></td>"
+                f"<td>{lost_text}</td>"
+                "</tr>"
             )
-            lost = failure_case.get("lost_units") or []
-            lost_html = (
-                f"<p>Units without surviving feeds: {', '.join(map(html.escape, lost))}</p>"
-                if lost
-                else ""
-            )
-            failure_section = (
-                "<section class='card failure'><h2>Failure scenario</h2>"
-                f"<p>Failing string <strong>{failure_case['failed_string']}</strong>. "
-                f"New design capacity per surviving string: <strong>{failure_case['design_capacity_per_string_kW']:.1f} kW</strong></p>"
-                "<table><thead><tr><th>String</th><th>Redistributed load (kW)</th></tr></thead>"
-                f"<tbody>{rows}</tbody></table>"
-                f"{lost_html}</section>"
-            )
+        failure_section = (
+            "<section class='card failure'>"
+            "<h2>Failure scenarios</h2>"
+            "<p>Each row shows the impact of losing the selected string. Loads automatically shift to the configured secondary feeds or the least-loaded survivors.</p>"
+            "<table>"
+            "<thead><tr><th>Failed string</th><th>New design capacity (kW)</th><th>Redistributed loads</th><th>Lost units</th></tr></thead>"
+            f"<tbody>{''.join(failure_rows)}</tbody>"
+            "</table>"
+            "</section>"
+        )
 
     summary_cards = f"""
         <section class="grid summary">
@@ -321,12 +362,12 @@ def build_page(data):
               <label>Pump η<input type='number' step='0.01' name='eta_pump' value='{inp("eta_pump")}'></label>
               <label>Pump motor η<input type='number' step='0.01' name='eta_pump_motor' value='{inp("eta_pump_motor")}'></label>
               <label>Chiller COP<input type='number' step='0.1' name='cop_chiller' value='{inp("cop_chiller")}'></label>
-              <label>Failed string<input type='number' min='1' name='failed_string' value='{inp("failed_string")}'></label>
             </div>
             <button type='submit'>Recalculate</button>
           </form>
         </header>
         {summary_cards}
+        {dual_section}
         <section class='card'>
           <h2>Power string summary</h2>
           <table>
